@@ -51,6 +51,18 @@ async function ensureOffscreenDocument() {
   });
 }
 
+async function hasOffscreenDocument() {
+  if (!chrome.offscreen || typeof chrome.offscreen.hasDocument !== "function") {
+    return false;
+  }
+
+  try {
+    return await chrome.offscreen.hasDocument();
+  } catch {
+    return false;
+  }
+}
+
 function getTabState(tabId) {
   if (!tabStates.has(tabId)) {
     tabStates.set(tabId, {
@@ -68,11 +80,37 @@ function isInvocationRequiredError(error) {
     || message.includes("chrome pages cannot be captured");
 }
 
+function isMissingReceiverError(error) {
+  const message = String(error && error.message ? error.message : error || "").toLowerCase();
+  return message.includes("receiving end does not exist");
+}
+
+async function sendOffscreenSetVolume(tabId, volume) {
+  try {
+    return await chrome.runtime.sendMessage({
+      type: MSG_OFFSCREEN_SET,
+      tabId,
+      volume
+    });
+  } catch (error) {
+    if (isMissingReceiverError(error)) {
+      return {
+        ok: false,
+        error: "Offscreen receiver missing"
+      };
+    }
+
+    throw error;
+  }
+}
+
 async function ensureTabAudioInitialized(tabId) {
   const state = getTabState(tabId);
-  if (state.initialized) {
+  if (state.initialized && await hasOffscreenDocument()) {
     return true;
   }
+
+  state.initialized = false;
 
   await ensureOffscreenDocument();
 
@@ -111,25 +149,20 @@ async function setVolumeForTab(tabId, volume) {
   await setStoredVolume(normalized);
   await ensureTabAudioInitialized(tabId);
 
-  let response = await chrome.runtime.sendMessage({
-    type: MSG_OFFSCREEN_SET,
-    tabId,
-    volume: normalized
-  });
+  let response = await sendOffscreenSetVolume(tabId, normalized);
 
   const hasMissingSessionError = response
     && response.ok === false
     && typeof response.error === "string"
-    && response.error.toLowerCase().includes("no audio session");
+    && (
+      response.error.toLowerCase().includes("no audio session")
+      || response.error.toLowerCase().includes("offscreen receiver missing")
+    );
 
   if (hasMissingSessionError) {
     state.initialized = false;
     await ensureTabAudioInitialized(tabId);
-    response = await chrome.runtime.sendMessage({
-      type: MSG_OFFSCREEN_SET,
-      tabId,
-      volume: normalized
-    });
+    response = await sendOffscreenSetVolume(tabId, normalized);
   }
 
   if (!response || !response.ok) {

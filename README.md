@@ -65,8 +65,8 @@ Installation locale (Load unpacked):
 1. Clone le repo:
 
 ```bash
-git clone <URL_DU_REPO>
-cd extensiontomy
+git clone https://github.com/LeRatSupreme/twitch-music-panel.git
+cd twitch-music-panel
 ```
 
 2. Ouvre la page extensions du navigateur:
