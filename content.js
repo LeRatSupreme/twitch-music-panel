@@ -17,9 +17,12 @@
   const SETTINGS_PRESETS_LIST_ID = "tmusic-settings-presets-list";
   const VOLUME_SLIDER_ID = "tmusic-volume-slider";
   const VOLUME_VALUE_ID = "tmusic-volume-value";
+  const MSG_UI_GET_VOLUME = "tmusic:ui-get-volume";
+  const MSG_UI_SET_VOLUME = "tmusic:ui-set-volume";
   const VOLUME_MIN = 0;
   const VOLUME_MAX = 100;
   const VOLUME_DEFAULT = 100;
+  const VOLUME_FEEDBACK_DEFAULT_TEXT = "Le slider ajuste le son lu dans ce panneau";
   const DEFAULT_PLAYLIST_ID = "41T9KGwH5FRbiQAKeTNMTb";
   const PLAYLIST_ID_STORAGE_KEY = "tmusicPlaylistId";
   const PLAYLIST_INPUT_STORAGE_KEY = "tmusicPlaylistInput";
@@ -44,6 +47,7 @@
   let lastFullscreenActivityAt = Date.now();
   let panelDragState = null;
   let volumeSendTimeout = 0;
+  let volumeFeedbackTimeout = 0;
   let presetHandlers = {
     onSelectPreset: null,
     onDeletePreset: null
@@ -342,15 +346,50 @@
     }
   }
 
+  function getVolumeFailureMessage(error) {
+    const raw = String(error && error.message ? error.message : error || "").toLowerCase();
+
+    if (raw.includes("toolbar icon") || raw.includes("has not been invoked") || raw.includes("activetab")) {
+      return "Active le volume: clique l'icone extension (barre Chrome), puis reessaie.";
+    }
+
+    if (raw.includes("chrome pages cannot be captured")) {
+      return "Capture audio impossible sur cette page.";
+    }
+
+    return "Volume indisponible. Recharge l'extension puis la page Twitch.";
+  }
+
   async function sendVolumeToBackground(percent) {
     const normalized = clampVolumePercent(percent) / 100;
 
     try {
-      await chrome.runtime.sendMessage({
-        type: "tmusic:set-volume",
+      const response = await chrome.runtime.sendMessage({
+        type: MSG_UI_SET_VOLUME,
         volume: normalized
       });
+
+      if (!response || !response.ok) {
+        throw new Error(response && response.error ? response.error : "Volume command rejected");
+      }
     } catch (error) {
+      const footerText = document.querySelector(".tmusic-footer-text");
+      if (footerText) {
+        if (volumeFeedbackTimeout) {
+          window.clearTimeout(volumeFeedbackTimeout);
+          volumeFeedbackTimeout = 0;
+        }
+
+        footerText.textContent = getVolumeFailureMessage(error);
+        footerText.style.color = "#ff8080";
+
+        volumeFeedbackTimeout = window.setTimeout(() => {
+          volumeFeedbackTimeout = 0;
+          footerText.textContent = VOLUME_FEEDBACK_DEFAULT_TEXT;
+          footerText.style.removeProperty("color");
+        }, 3800);
+      }
+
       console.warn("TMusic volume command failed", error);
     }
   }
@@ -372,7 +411,7 @@
 
     try {
       const response = await chrome.runtime.sendMessage({
-        type: "tmusic:get-volume"
+        type: MSG_UI_GET_VOLUME
       });
 
       if (response && response.ok && Number.isFinite(response.volume)) {
@@ -915,7 +954,7 @@
 
     const footerText = document.createElement("span");
     footerText.className = "tmusic-footer-text";
-    footerText.textContent = "Le slider ajuste le son lu dans ce panneau";
+    footerText.textContent = VOLUME_FEEDBACK_DEFAULT_TEXT;
 
     heading.appendChild(title);
     heading.appendChild(subtitle);

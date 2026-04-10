@@ -6,6 +6,7 @@
   "permissions": [
     "scripting",
     "storage",
+    "activeTab",
     "tabs",
     "tabCapture",
     "offscreen"
@@ -15,6 +16,9 @@
   ],
   "background": {
     "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Twitch Music Panel"
   },
   "content_scripts": [
     {

@@ -2,6 +2,12 @@ const DEFAULT_VOLUME = 1;
 const MIN_VOLUME = 0;
 const MAX_VOLUME = 1;
 const VOLUME_STORAGE_KEY = "tmusicOverlayVolume";
+const MSG_UI_GET_VOLUME = "tmusic:ui-get-volume";
+const MSG_UI_SET_VOLUME = "tmusic:ui-set-volume";
+const MSG_OFFSCREEN_INIT = "tmusic:offscreen-init-tab-audio";
+const MSG_OFFSCREEN_SET = "tmusic:offscreen-set-volume";
+const MSG_OFFSCREEN_DESTROY = "tmusic:offscreen-destroy-tab-audio";
+const INVOCATION_REQUIRED_ERROR = "Click the extension toolbar icon once on this Twitch tab, then retry volume.";
 const tabStates = new Map();
 
 function clampVolume(value) {
@@ -55,6 +61,13 @@ function getTabState(tabId) {
   return tabStates.get(tabId);
 }
 
+function isInvocationRequiredError(error) {
+  const message = String(error && error.message ? error.message : error || "").toLowerCase();
+  return message.includes("has not been invoked")
+    || message.includes("activetab")
+    || message.includes("chrome pages cannot be captured");
+}
+
 async function ensureTabAudioInitialized(tabId) {
   const state = getTabState(tabId);
   if (state.initialized) {
@@ -63,12 +76,20 @@ async function ensureTabAudioInitialized(tabId) {
 
   await ensureOffscreenDocument();
 
-  const streamId = await chrome.tabCapture.getMediaStreamId({
-    targetTabId: tabId
-  });
+  let streamId;
+  try {
+    streamId = await chrome.tabCapture.getMediaStreamId({
+      targetTabId: tabId
+    });
+  } catch (error) {
+    if (isInvocationRequiredError(error)) {
+      throw new Error(INVOCATION_REQUIRED_ERROR);
+    }
+    throw error;
+  }
 
   const response = await chrome.runtime.sendMessage({
-    type: "tmusic:init-tab-audio",
+    type: MSG_OFFSCREEN_INIT,
     tabId,
     streamId,
     volume: state.volume
@@ -90,11 +111,26 @@ async function setVolumeForTab(tabId, volume) {
   await setStoredVolume(normalized);
   await ensureTabAudioInitialized(tabId);
 
-  const response = await chrome.runtime.sendMessage({
-    type: "tmusic:set-volume",
+  let response = await chrome.runtime.sendMessage({
+    type: MSG_OFFSCREEN_SET,
     tabId,
     volume: normalized
   });
+
+  const hasMissingSessionError = response
+    && response.ok === false
+    && typeof response.error === "string"
+    && response.error.toLowerCase().includes("no audio session");
+
+  if (hasMissingSessionError) {
+    state.initialized = false;
+    await ensureTabAudioInitialized(tabId);
+    response = await chrome.runtime.sendMessage({
+      type: MSG_OFFSCREEN_SET,
+      tabId,
+      volume: normalized
+    });
+  }
 
   if (!response || !response.ok) {
     throw new Error(response && response.error ? response.error : "Failed to apply volume");
@@ -108,7 +144,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return;
   }
 
-  if (message.type === "tmusic:get-volume") {
+  if (message.type === MSG_UI_GET_VOLUME) {
     (async () => {
       const tabId = sender.tab && typeof sender.tab.id === "number" ? sender.tab.id : null;
       const storedVolume = await getStoredVolume();
@@ -129,7 +165,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  if (message.type === "tmusic:set-volume") {
+  if (message.type === MSG_UI_SET_VOLUME) {
     (async () => {
       const tabId = sender.tab && typeof sender.tab.id === "number" ? sender.tab.id : null;
       if (tabId === null) {
@@ -152,9 +188,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 chrome.tabs.onRemoved.addListener((tabId) => {
   tabStates.delete(tabId);
   chrome.runtime.sendMessage({
-    type: "tmusic:destroy-tab-audio",
+    type: MSG_OFFSCREEN_DESTROY,
     tabId
   }).catch(() => {
     // Offscreen document may not be active.
+  });
+});
+
+chrome.action.onClicked.addListener((tab) => {
+  if (!tab || typeof tab.id !== "number") {
+    return;
+  }
+
+  const tabId = tab.id;
+  const state = getTabState(tabId);
+
+  ensureTabAudioInitialized(tabId).catch(() => {
+    state.initialized = false;
   });
 });

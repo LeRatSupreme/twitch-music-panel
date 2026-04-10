@@ -198,6 +198,7 @@ extensiontomy/
 
 ### Le slider volume ne change rien
 
+- Clique une fois sur l'icone de l'extension dans la barre d'outils Chrome sur l'onglet Twitch, puis reteste le slider.
 - Ouvre la console de la page et la page service worker (extensions) pour verifier les erreurs runtime.
 - Verifie que le navigateur supporte bien `tabCapture` + `offscreen`.
 - Recharge l'extension puis reteste.
