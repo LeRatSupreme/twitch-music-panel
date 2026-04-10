@@ -17,12 +17,15 @@
   const SETTINGS_PRESETS_LIST_ID = "tmusic-settings-presets-list";
   const VOLUME_SLIDER_ID = "tmusic-volume-slider";
   const VOLUME_VALUE_ID = "tmusic-volume-value";
-  const MSG_UI_GET_VOLUME = "tmusic:ui-get-volume";
-  const MSG_UI_SET_VOLUME = "tmusic:ui-set-volume";
+  const TWITCH_MUTE_TOGGLE_ID = "tmusic-twitch-mute-toggle";
+  const SPOTIFY_VOLUME_STORAGE_KEY = "volumeSpotify";
   const VOLUME_MIN = 0;
   const VOLUME_MAX = 100;
   const VOLUME_DEFAULT = 100;
-  const VOLUME_FEEDBACK_DEFAULT_TEXT = "Le slider ajuste le son lu dans ce panneau";
+  const VOLUME_FEEDBACK_DEFAULT_TEXT = "Le slider ajuste le son Spotify du plugin.";
+  const MUTE_TWITCH_WHEN_PANEL_OPEN_STORAGE_KEY = "tmusicMuteTwitchWhenPanelOpen";
+  const MUTE_TWITCH_WHEN_PANEL_OPEN_DEFAULT = false;
+  const FORCE_PLUGIN_ONLY_MODE = false;
   const DEFAULT_PLAYLIST_ID = "41T9KGwH5FRbiQAKeTNMTb";
   const PLAYLIST_ID_STORAGE_KEY = "tmusicPlaylistId";
   const PLAYLIST_INPUT_STORAGE_KEY = "tmusicPlaylistInput";
@@ -48,6 +51,8 @@
   let panelDragState = null;
   let volumeSendTimeout = 0;
   let volumeFeedbackTimeout = 0;
+  let muteTwitchWhenPanelOpen = MUTE_TWITCH_WHEN_PANEL_OPEN_DEFAULT;
+  const twitchMediaMuteSnapshot = new WeakMap();
   let presetHandlers = {
     onSelectPreset: null,
     onDeletePreset: null
@@ -346,31 +351,109 @@
     }
   }
 
-  function getVolumeFailureMessage(error) {
-    const raw = String(error && error.message ? error.message : error || "").toLowerCase();
+  function getTwitchMediaElements() {
+    const root = document.getElementById(ROOT_ID);
+    return Array.from(document.querySelectorAll("video, audio")).filter((node) => !root || !root.contains(node));
+  }
 
-    if (raw.includes("toolbar icon") || raw.includes("has not been invoked") || raw.includes("activetab")) {
-      return "Active le volume: clique l'icone extension (barre Chrome), puis reessaie.";
+  function shouldMuteTwitchAudio() {
+    const root = document.getElementById(ROOT_ID);
+    return Boolean(root && root.classList.contains("tmusic-open") && muteTwitchWhenPanelOpen);
+  }
+
+  function setTwitchMuteToggleUi(enabled) {
+    const toggle = document.getElementById(TWITCH_MUTE_TOGGLE_ID);
+    if (!toggle) {
+      return;
     }
 
-    if (raw.includes("chrome pages cannot be captured")) {
-      return "Capture audio impossible sur cette page.";
+    const next = Boolean(enabled);
+    if (toggle.checked !== next) {
+      toggle.checked = next;
+    }
+  }
+
+  function applyTwitchAudioMuteState() {
+    const shouldMute = shouldMuteTwitchAudio();
+    const mediaElements = getTwitchMediaElements();
+
+    mediaElements.forEach((media) => {
+      if (shouldMute) {
+        if (!twitchMediaMuteSnapshot.has(media)) {
+          twitchMediaMuteSnapshot.set(media, Boolean(media.muted));
+        }
+        media.muted = true;
+        return;
+      }
+
+      if (!twitchMediaMuteSnapshot.has(media)) {
+        return;
+      }
+
+      media.muted = twitchMediaMuteSnapshot.get(media);
+      twitchMediaMuteSnapshot.delete(media);
+    });
+  }
+
+  async function saveTwitchMutePreference(value) {
+    try {
+      await chrome.storage.local.set({
+        [MUTE_TWITCH_WHEN_PANEL_OPEN_STORAGE_KEY]: Boolean(value)
+      });
+    } catch {
+      // Ignore storage failures and keep in-memory preference.
+    }
+  }
+
+  async function initializeTwitchMutePreference() {
+    if (FORCE_PLUGIN_ONLY_MODE) {
+      muteTwitchWhenPanelOpen = true;
+      setTwitchMuteToggleUi(true);
+
+      const toggle = document.getElementById(TWITCH_MUTE_TOGGLE_ID);
+      if (toggle) {
+        toggle.disabled = true;
+      }
+
+      applyTwitchAudioMuteState();
+      return;
     }
 
-    return "Volume indisponible. Recharge l'extension puis la page Twitch.";
+    let nextValue = MUTE_TWITCH_WHEN_PANEL_OPEN_DEFAULT;
+
+    try {
+      const data = await chrome.storage.local.get(MUTE_TWITCH_WHEN_PANEL_OPEN_STORAGE_KEY);
+      if (typeof data[MUTE_TWITCH_WHEN_PANEL_OPEN_STORAGE_KEY] === "boolean") {
+        nextValue = data[MUTE_TWITCH_WHEN_PANEL_OPEN_STORAGE_KEY];
+      }
+    } catch {
+      nextValue = MUTE_TWITCH_WHEN_PANEL_OPEN_DEFAULT;
+    }
+
+    muteTwitchWhenPanelOpen = nextValue;
+    setTwitchMuteToggleUi(nextValue);
+    applyTwitchAudioMuteState();
   }
 
   async function sendVolumeToBackground(percent) {
     const normalized = clampVolumePercent(percent) / 100;
 
     try {
-      const response = await chrome.runtime.sendMessage({
-        type: MSG_UI_SET_VOLUME,
-        volume: normalized
+      await chrome.storage.local.set({
+        [SPOTIFY_VOLUME_STORAGE_KEY]: normalized
       });
 
-      if (!response || !response.ok) {
-        throw new Error(response && response.error ? response.error : "Volume command rejected");
+      console.log("[TMusic] volumeSpotify updated:", normalized);
+
+      const footerText = document.querySelector(".tmusic-footer-text");
+      if (footerText) {
+        if (volumeFeedbackTimeout) {
+          window.clearTimeout(volumeFeedbackTimeout);
+          volumeFeedbackTimeout = 0;
+        }
+
+        footerText.textContent = VOLUME_FEEDBACK_DEFAULT_TEXT;
+        footerText.style.removeProperty("color");
       }
     } catch (error) {
       const footerText = document.querySelector(".tmusic-footer-text");
@@ -380,7 +463,7 @@
           volumeFeedbackTimeout = 0;
         }
 
-        footerText.textContent = getVolumeFailureMessage(error);
+        footerText.textContent = "Impossible de sauvegarder le volume Spotify.";
         footerText.style.color = "#ff8080";
 
         volumeFeedbackTimeout = window.setTimeout(() => {
@@ -410,17 +493,15 @@
     let startingPercent = VOLUME_DEFAULT;
 
     try {
-      const response = await chrome.runtime.sendMessage({
-        type: MSG_UI_GET_VOLUME
-      });
-
-      if (response && response.ok && Number.isFinite(response.volume)) {
-        startingPercent = clampVolumePercent(response.volume * 100);
+      const data = await chrome.storage.local.get(SPOTIFY_VOLUME_STORAGE_KEY);
+      if (Number.isFinite(data[SPOTIFY_VOLUME_STORAGE_KEY])) {
+        startingPercent = clampVolumePercent(data[SPOTIFY_VOLUME_STORAGE_KEY] * 100);
       }
     } catch {
       startingPercent = VOLUME_DEFAULT;
     }
 
+    console.log("[TMusic] volumeSpotify init:", startingPercent / 100);
     setVolumeUi(startingPercent);
   }
 
@@ -618,6 +699,8 @@
     if (panel) {
       panel.setAttribute("aria-hidden", String(!shouldOpen));
     }
+
+    applyTwitchAudioMuteState();
   }
 
   function findChatToggleButton() {
@@ -935,7 +1018,7 @@
 
     const volumeLabel = document.createElement("span");
     volumeLabel.className = "tmusic-volume-label";
-    volumeLabel.textContent = "Volume";
+    volumeLabel.textContent = "Volume Spotify";
 
     const volumeSlider = document.createElement("input");
     volumeSlider.id = VOLUME_SLIDER_ID;
@@ -951,6 +1034,21 @@
     volumeValue.id = VOLUME_VALUE_ID;
     volumeValue.className = "tmusic-volume-value";
     volumeValue.textContent = "100%";
+
+    const twitchMuteRow = document.createElement("label");
+    twitchMuteRow.className = "tmusic-twitch-mute-row";
+
+    const twitchMuteToggle = document.createElement("input");
+    twitchMuteToggle.id = TWITCH_MUTE_TOGGLE_ID;
+    twitchMuteToggle.className = "tmusic-twitch-mute-toggle";
+    twitchMuteToggle.type = "checkbox";
+    twitchMuteToggle.checked = muteTwitchWhenPanelOpen;
+
+    const twitchMuteText = document.createElement("span");
+    twitchMuteText.className = "tmusic-twitch-mute-text";
+    twitchMuteText.textContent = FORCE_PLUGIN_ONLY_MODE
+      ? "Mode musique seule actif"
+      : "Mode musique seule (couper le son Twitch)";
 
     const footerText = document.createElement("span");
     footerText.className = "tmusic-footer-text";
@@ -1107,13 +1205,23 @@
       sendVolumeToBackground(percent);
     });
 
+    twitchMuteToggle.addEventListener("change", () => {
+      muteTwitchWhenPanelOpen = Boolean(twitchMuteToggle.checked);
+      saveTwitchMutePreference(muteTwitchWhenPanelOpen);
+      applyTwitchAudioMuteState();
+    });
+
     header.appendChild(brand);
     header.appendChild(actions);
+
+    twitchMuteRow.appendChild(twitchMuteToggle);
+    twitchMuteRow.appendChild(twitchMuteText);
 
     volumeRow.appendChild(volumeLabel);
     volumeRow.appendChild(volumeSlider);
     volumeRow.appendChild(volumeValue);
     footer.appendChild(volumeRow);
+    footer.appendChild(twitchMuteRow);
     footer.appendChild(footerText);
 
     panel.appendChild(handle);
@@ -1144,6 +1252,7 @@
     clampSavedPanelIntoViewport();
     initializePlaylistState();
     initializeVolumeState();
+    initializeTwitchMutePreference();
     lastFullscreenActivityAt = Date.now();
     restartFullscreenIdleTimer();
     scheduleFullscreenPositionUpdate();
@@ -1163,11 +1272,13 @@
         buildUi();
       }
 
+      applyTwitchAudioMuteState();
       scheduleFullscreenPositionUpdate();
     });
 
     observer.observe(document.body, { childList: true, subtree: true });
 
+    applyTwitchAudioMuteState();
     scheduleFullscreenPositionUpdate();
   }
 

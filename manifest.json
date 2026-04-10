@@ -4,19 +4,13 @@
   "version": "1.0.0",
   "description": "Ajoute un bouton flottant sur Twitch pour afficher/masquer un lecteur de musique intégré.",
   "permissions": [
-    "scripting",
-    "storage",
-    "activeTab",
-    "tabs",
-    "tabCapture",
-    "offscreen"
+    "storage"
   ],
   "host_permissions": [
-    "*://*.twitch.tv/*"
+    "*://*.twitch.tv/*",
+    "https://open.spotify.com/*",
+    "https://*.spotify.com/*"
   ],
-  "background": {
-    "service_worker": "background.js"
-  },
   "action": {
     "default_title": "Twitch Music Panel"
   },
@@ -32,6 +26,29 @@
         "style.css"
       ],
       "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://open.spotify.com/*",
+        "https://*.spotify.com/*"
+      ],
+      "js": [
+        "spotify-volume-main.js"
+      ],
+      "all_frames": true,
+      "world": "MAIN",
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://open.spotify.com/*",
+        "https://*.spotify.com/*"
+      ],
+      "js": [
+        "spotify-volume.js"
+      ],
+      "all_frames": true,
+      "run_at": "document_start"
     }
   ]
 }
