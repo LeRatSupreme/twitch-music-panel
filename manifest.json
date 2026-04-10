@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "Twitch Music Panel",
+  "version": "1.0.0",
+  "description": "Ajoute un bouton flottant sur Twitch pour afficher/masquer un lecteur de musique intégré.",
+  "permissions": [
+    "scripting",
+    "storage",
+    "tabs",
+    "tabCapture",
+    "offscreen"
+  ],
+  "host_permissions": [
+    "*://*.twitch.tv/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.twitch.tv/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "css": [
+        "style.css"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}
